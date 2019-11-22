@@ -1,0 +1,517 @@
+---
+title: "Initial Analysis for Few Shot Learning"
+output:
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r}
+library(tidyverse)
+library(brms)
+library(lme4)
+library(lmerTest)
+library(plotrix)
+library(stringr)
+library(readxl)
+library(RColorBrewer)
+library(Hmisc)
+```
+
+
+# Verbal Argument Structure
+
+Read in the data. Verb argument structure status (transitive, ambitransitive, intransitive) comes from CELEX2, distributed by the LDC.
+
+```{r}
+d = read.csv("test_items/argstruct_items.csv", header=FALSE) %>%
+  rename("word" = V1) %>%
+  rename("verb" = V2) %>%
+  rename("pos" = V3) %>%
+  rename("freq" = V4) %>%
+  rename("is_trans" = V5) %>%
+  rename("is_intrans" = V6) %>%
+  rename("gram" = V7) %>%
+  rename("target_id" = V8) %>%
+  rename("item_number" = V9) %>%
+  rename("test" = V10)
+
+results = read.csv("test_items/argstruct_lstm_output.txt", sep=" ", header=FALSE) %>%
+  rename("word_1" = V1) %>%
+  rename("sent_id" = V2) %>%
+  rename("sent_pos" = V3) %>%
+  rename("w_len" = V4) %>%
+  rename("surprisal" = V5)
+
+d_mod = read.csv("test_items/argstruct-mod_items.csv", header=FALSE) %>%
+  rename("word" = V1) %>%
+  rename("verb" = V2) %>%
+  rename("pos" = V3) %>%
+  rename("freq" = V4) %>%
+  rename("is_trans" = V5) %>%
+  rename("is_intrans" = V6) %>%
+  rename("gram" = V7) %>%
+  rename("target_id" = V8) %>%
+  rename("item_number" = V9) %>%
+  rename("test" = V10) %>%
+  mutate(test = if_else(test=="transf", "transf-mod", "base-mod"))
+
+results_mod = read.csv("test_items/argstruct-mod_lstm_output.txt", sep=" ", header=FALSE) %>%
+  rename("word_1" = V1) %>%
+  rename("sent_id" = V2) %>%
+  rename("sent_pos" = V3) %>%
+  rename("w_len" = V4) %>%
+  rename("surprisal" = V5)
+
+d = rbind(d, d_mod, d_pres)
+results = rbind(results, results_mod, results_pres)
+
+v_counts = read_csv("data/v_counts.csv") %>%
+  rename("freq" = `0`) %>%
+  select(-X1, -LEMMA) %>%
+  spread(XPOS, freq) %>%
+  replace(is.na(.), 0) %>%
+  mutate(total = VBD + VBN,
+         percent_VBD = VBD/total,
+         percent_VBN = VBN/total) %>%
+  rename("word" = WORD)
+```
+
+Add in factor values based on token frequency:
+
+  • "total_freq" counts the number of times the token shows up in the PTB
+  
+  • "vbd_freq" counts the number of times it appears in transitive contexts
+  
+  • "vbn_freq" counts the number of times it appears in passive contexts
+
+```{r}
+d_agg = merge(d, results, by=0, all=TRUE) %>%
+  arrange(as.numeric(Row.names)) %>%
+  filter((target_id-1 == sent_pos) | (target_id-2 == sent_pos) | (target_id-3 == sent_pos)) %>%
+  filter( !((target_id-3 == sent_pos) & (test=="base")) ) %>%
+  group_by(verb, pos, is_trans, is_intrans, gram, test, freq, item_number) %>%
+    summarise(surprisal = sum(surprisal)) %>%
+  ungroup() %>%
+  spread(gram, surprisal) %>%
+  mutate(obj_exp = nobj-obj) %>%
+  select(-obj, -nobj) %>%
+  mutate(is_trans = if_else(((is_trans=="Y") & (is_intrans=="Y")), "Ambitrans", as.character(is_trans))) %>%
+  mutate(is_trans = if_else(is_trans == "Y", "Trans", is_trans)) %>%
+  mutate(is_trans = if_else(is_trans == "N", "Intrans", is_trans)) %>%
+  select(-is_intrans, -freq, -pos)
+
+  
+d_agg =  merge(d_agg, v_counts, by.x="verb", by.y = "word") %>%
+  mutate(total = if_else(total > 100, 100, total)) %>%
+  mutate(VBD = if_else(VBD > 100, 100, VBD)) %>%
+  mutate(VBN = if_else(VBN > 100, 100, VBN)) %>%
+
+  mutate(total_freq = "100") %>%
+  mutate(total_freq = if_else(total<=50, "50", total_freq)) %>%
+  mutate(total_freq = if_else(total<=30, "30", total_freq)) %>%
+  mutate(total_freq = if_else(total<=20, "20", total_freq)) %>%
+  mutate(total_freq = if_else(total<=10, "10", total_freq)) %>%
+  mutate(total_freq = if_else(total<=5, "5", total_freq)) %>%
+  mutate(total_freq = if_else(total<=3, "3", total_freq)) %>%
+  mutate(total_freq = if_else(total<=2, "2", total_freq)) %>%
+  mutate(total_freq = if_else(total<=1, "1", total_freq)) %>%
+  mutate(total_freq = if_else(total<=0, "1", total_freq)) %>%
+  mutate(total_freq = factor(total_freq, levels = c("0", "1", "2", "3", "5", "10", "20", "30", "50", "100"))) %>%
+  
+  mutate(vbd_freq = "100") %>%
+  mutate(vbd_freq = if_else(VBD<=50, "50", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=30, "30", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=20, "20", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=10, "10", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=5, "5", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=3, "3", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=2, "2", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=1, "1", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=0, "0", vbd_freq)) %>%
+  mutate(vbd_freq = factor(vbd_freq, levels = c("0", "1", "2", "3", "5", "10", "20", "30", "50", "100"))) %>%
+  
+  mutate(vbn_freq = "100") %>%
+  mutate(vbn_freq = if_else(VBN<=50, "50", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=30, "30", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=20, "20", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=10, "10", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=5, "5", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=3, "3", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=2, "2", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=1, "1", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=0, "0", vbn_freq)) %>%
+  mutate(vbn_freq = factor(vbn_freq, levels = c("0", "1", "2", "3", "5", "10", "20", "30", "50", "100")))
+
+```
+
+
+## Transitive Context Few Shot Learning
+
+### Tests
+
+The Object Expectation is the surprisal in the no-obj condition minus the surprisal in the obj condition. Positive means the model expects an object after the verb
+
+Base
+
+  • The lion devoured the gazelle yesterday . [obj]
+  
+  • The lion devoured yesterday . [no-obj]
+  
+We measure the surprisal in the "yesterday ." portion of the sentence
+
+Predictions: 
+
+  (1) The object expectation for transitive should be greater than for intransitive verbs.
+  
+  (2) The object expectation should be positive for transitive verbs (an object should be expected)
+  
+  (3) The object expectation should be negative for intransitive verbs (no object should be expected)
+  
+  (4) Ambitransitive verbs should be in between transitive and intransitive
+
+### Results
+
+Plot the object expectation for transitive, intransitive and ambitransitive verbs against their frequency in active contexts (vbn_freq) in the corpus.
+
+We see a couple of things:
+
+  • For intransitive verbs: The object expectation stars out positive and becomes negative with more exposure, indicating that the models learn proper transitive behavior with greater exposure.
+  
+  • For transitive verbs: The object expectation starts off postivie, and goes to about zero as the exposure increases. Why? It may be that the high-frequency verbs appear a lot in passive contexts, in which no NP follows the verb directly.
+      
+  • There is a significant difference between transitive and intransitive after only 2 exposures! Strong evidence of few-shot learning capeabilities
+      
+  • The ambi-transitive verbs are between transitive and intransitives.
+
+```{r}
+d_agg %>%
+  filter(test == "base-pres") %>%
+  group_by(is_trans, test, vbd_freq) %>%
+    summarise(m = mean(obj_exp),
+              s=std.error(obj_exp),
+              upper=m+1.96*s,
+              lower=m-1.96*s)%>%
+  ungroup() %>%
+  ggplot(aes(x=vbd_freq, y=m, ymin=lower, ymax=upper, color=is_trans)) +
+    geom_point(stat="identity", position="dodge", size=3) +
+    geom_errorbar(width=.2, alpha=0.8) +
+    geom_hline(yintercept=0, color="blue", alpha=0.5) +
+    ylab("Object Expectation") +
+    xlab("Frequency") +
+    facet_wrap(~test) +
+    theme(axis.text=element_text(size=10),
+          legend.position = "bottom")
+ggsave("./images/argstruct_base.png",height=5,width=5)
+
+```
+
+## Passive Context Few Shot Learning
+
+### Test Items
+
+Again, object expectation is the surprisal in the object condition minus the surprisal in the no-object condition. Now, it may be the case that all the model is doing is learning that some verbs can occur in a "was + VERB" context. If so, that's fine. This test is -- in some sense -- a control (the model would fail to generalize for verbs it hasn't seen in the passive context).
+
+  • The gazelle was devoured yesterday . [object]
+  
+  • The gazelle devoured yesterday . [no-object]
+  
+Example with transitive verb
+
+  • The gazelle was slept yesterday . [object]
+  
+  • The gazelle slept yesterday . [no-object]
+  
+Modifier
+
+  • The gazelle was quickly and rapidly devoured yesterday . [obj]
+  
+  • The gazelle quickly and rapidly devoured yesterday . [no-obj]
+  
+We measure the object expectation in the "devoured yesterday ." portion of the sentences. 
+
+Predictions: 
+
+  (1) The object expectation for transitive should be greater than for intransitive verbs.
+  
+  (2) The object expectation should be positive for transitive verbs (it is more likely to occur with a passive object than without an object)
+  
+  (3) The object expectation should be negative for intransitive verbs (it is more likely to occur without an object than with a passive object)
+  
+  (4) Ambitransitive verbs should be in between transitive and intransitive
+
+### Results
+
+Here we have to plot against the frequency in total contexts, becaues (theoretically) intransitive verbs don't occur in passive contexts. (Actually, according to the PTB there are a number of times intransitive verbs occur passivally. I'm investigating this further.)
+
+We see a couple of things:
+
+  • For intransitive verbs: The object expectation stars out positive and becomes negative with more exposure, indicating that the models learn proper transitive behavior with greater exposure. Crucially, the learning rate is slower than for the active contexts. This is because the model has less (or no) exposure for these verbs in passive contexts.
+      
+  • For transitive verbs: The object expectation starts off postivie, and increases with exposure.
+  
+  • There is a significant difference between transitive and intransitive after only 2 exposures! Strong evidence of few-shot learning capeabilities
+      
+  • The ambi-transitive verbs are between transitive and intransitives.
+
+
+```{r}
+d_agg %>%
+  filter( test=="transf" | test == "transf-mod") %>%
+  group_by(is_trans, test, total_freq) %>%
+    summarise(m = mean(obj_exp),
+              s=std.error(obj_exp),
+              upper=m+1.96*s,
+              lower=m-1.96*s)%>%
+  ungroup() %>%
+  ggplot(aes(x=total_freq, y=m, ymin=lower, ymax=upper, color=is_trans)) +
+    geom_point(stat="identity", position="dodge", size=3) +
+    geom_errorbar(width=.2, alpha=0.8) +
+    geom_hline(yintercept=0, color="blue", alpha=0.5) +
+    ylab("Object Expectation") +
+    xlab("Frequency in Total Contexts") +
+    facet_wrap(~test) +
+    theme(axis.text=element_text(size=10),
+          legend.position = "bottom")
+ggsave("./images/argstruct_transf.png",height=5,width=5)
+
+```
+
+## Transformations 
+
+### Test Items
+
+Now, we look at the learning rate for the transformed test, for verbs that occur *only* in the active contexts in the training data. I have to clip for verbs that occur only 10 or fewer times, because there weren't many intransitive and transitive verbs that occured only in the active context (the PTB has a lot of passive voice!).
+
+  • The gazelle was (quickly and rapidly) devoured yesterday . [object]
+  
+  • The gazelle (quickly and rapidly) devoured yesterday . [no-object]
+
+  
+Predictions: If the model is able to learn something about verbal argument structure, then we expect our previos predictions to hold
+
+  (1) The object expectation for transitive should be greater than for intransitive verbs.
+  
+  (2) The object expectation should be positive for transitive verbs (it is more likely to occur with a passive object than without an object)
+  
+  (3) The object expectation should be negative for intransitive verbs (it is more likely to occur without an object than with a passive object)
+
+### Results
+
+  • For intransitive verbs: The object expectation stars out positive and becomes negative with more exposure.
+  
+  • For transitive verbs: The object expectation starts off postivie, and remains positive.
+  
+  • There is a significant difference between transitive and intransitive after only 2 exposures!
+
+I think this is a really stunning result! It means that the model is able to link statistics in the base context with liklihood about the verb appearing in the passive context.
+
+```{r}
+d_agg %>%
+  filter(VBN == 0, test=="transf" | test == "transf-mod", is_trans != "Ambitrans") %>%
+  filter(vbd_freq != "20" & vbd_freq != "100") %>%
+  group_by(is_trans, test, vbd_freq) %>%
+    summarise(m = mean(obj_exp),
+              s=std.error(obj_exp),
+              upper=m+1.96*s,
+              lower=m-1.96*s)%>%
+  ungroup() %>%
+  ggplot(aes(x=vbd_freq, y=m, ymin=lower, ymax=upper, color=is_trans)) +
+    geom_point(stat="identity", position="dodge", size=4) +
+    geom_errorbar(width=.1) +
+    geom_hline(yintercept=0, color="blue", alpha=0.5) +
+    ylab("Object Expectation") +
+    xlab("Frequency in VBD Contexts") +
+    facet_wrap(~test) +
+    theme(axis.text=element_text(size=10),
+          legend.position = "bottom")
+ggsave("./images/argstruct_invar.png",height=5,width=5)
+
+```
+
+
+# Nominal Number Learning
+
+Read in the data. 
+
+```{r}
+d = read.csv("number_items.csv", header=FALSE) %>%
+  rename("word" = V1) %>%
+  rename("verb" = V2) %>%
+  rename("pos" = V3) %>%
+  rename("freq" = V4) %>%
+  rename("gram" = V5) %>%
+  rename("target_id" = V6) %>%
+  rename("item_number" = V7) %>%
+  rename("test" = V8)
+
+results = read.csv("number_lstm_output.txt", sep=" ", header=FALSE) %>%
+  rename("word_1" = V1) %>%
+  rename("sent_id" = V2) %>%
+  rename("sent_pos" = V3) %>%
+  rename("w_len" = V4) %>%
+  rename("surprisal" = V5)
+
+d_agg = merge(d, results, by=0, all=TRUE) %>%
+  arrange(as.numeric(Row.names)) %>%
+  filter(target_id-1 == sent_pos) %>%
+  select(-Row.names, -word, -target_id, -word_1, -sent_id, -sent_pos, -w_len) %>%
+  spread(gram, surprisal) %>%
+  mutate(pl_exp = sing-pl) %>%
+  select(-sing, -pl) %>%
+  mutate(freq = if_else(freq>100, 100, freq/1)) %>%
+  mutate(freq_cat = "100") %>%
+  #mutate(freq_cat = if_else(freq<=50, "50", freq_cat)) %>%
+  #mutate(freq_cat = if_else(freq<=20, "20", freq_cat)) %>%
+  mutate(freq_cat = if_else(freq<=10, "10", freq_cat)) %>%
+  mutate(freq_cat = if_else(freq<=5, "5", freq_cat)) %>%
+  mutate(freq_cat = if_else(freq<=4, "4", freq_cat)) %>%
+  mutate(freq_cat = if_else(freq<=3, "3", freq_cat)) %>%
+  mutate(freq_cat = if_else(freq<=2, "2", freq_cat)) %>%
+  mutate(freq_cat = if_else(freq<=1, "1", freq_cat)) %>%
+
+  mutate(freq_cat = factor(freq_cat, levels = c("1", "2", "3", "4", "5", "10", "100")))
+```
+
+## Base Context Few Shot Learning
+
+For these results I plot learning against frequency in both base and transformed contexts.
+
+### Test Items
+
+We measure the plural expectation by taking the surprisal at "is" minus the surprisal at "are" for two classes of nouns: Singular nouns (NN) and Plural nouns (NNS)
+
+Base simple
+
+  • The president is [sing]
+  
+  • The president are [pl]
+
+Base_PP: A nominal distractor of the opposite number
+
+  • The president with the documents is...
+  
+  • The president with the documents are...
+  
+Predictions:
+
+  (1) For singular nouns (NN): Negative plural expectation
+  
+  (2) For plural nouns (NNS): Positive plural expectation
+  
+  (3) Difference in expectation between NN and NNS
+
+### Results
+
+Simple Condition
+
+  • We find a significant difference between NN and NNS with even one exposure
+  
+  • We find a positive plural expectation for NNS after two exposures
+  
+Base_PP Condition
+
+  • We find a significant difference between NN and NNS after two exposures
+  
+  • The singular expectation grows with exposure for NNS, but is never greater than zero
+
+```{r}
+d_agg %>%
+  filter(test == "base_pp" | test == "base_simple") %>%
+  group_by(pos, freq_cat, test) %>%
+    summarise(m = mean(pl_exp),
+              s=std.error(pl_exp),
+              upper=m+1.96*s,
+              lower=m-1.96*s)%>%
+  ungroup() %>%
+  ggplot(aes(x=freq_cat, y=m, ymin=lower, ymax=upper, color=pos)) +
+    geom_point(stat="identity", position="dodge", size=3, alpha=1) +
+    geom_errorbar(width=.2, alpha=1) +
+    geom_hline(yintercept=0, color="blue", alpha=0.5) +
+    ylab("Plural Expectation") +
+    xlab("Frequency") +
+    facet_wrap(~test) +
+    #ylim(-1, 1) +
+    theme(axis.text=element_text(size=10),
+          legend.position = "bottom")
+ggsave("./images/number_base.png",height=5,width=5)
+
+
+```
+
+## Transformed Context Few Shot Learning
+
+### Test Items
+
+We measure the plural expectation by taking the surprisal difference between the two conditions at the noun. We use singular nouns (NN) and plural nouns (NNS)
+
+Transf_simple:
+
+  • Is/was the president... [sing]
+  
+  • Are/were the president... [pl]
+
+Transf_mod:
+
+  • Is/was the very big and important president...[sing]
+  
+  • Are/were the very big and important president... [pl]
+  
+Predictions:
+
+  (1) For singular nouns (NN): Negative plural expectation
+  
+  (2) For plural nouns (NNS): Positive plural expectation
+  
+  (3) Difference in expectation between NN and NNS
+
+### Results
+
+Note: The scale here is *really small*. Because we have so many items the difference is probably significant (I haven't ran the stats yet, but the error bars are tiny). However, the diffence is like 1/5 of a bit of surprisal.
+
+Simple Condition
+
+  • We find a significant difference between NN and NNS after two exposures, except for nouns that occur 3 times in training.
+  
+  • The NN never has a negative plural expectation.
+  
+Modifier Condition
+
+  • We find a significant difference between NN and NNS after two exposures, but again for nouns that occur 3 timse the difference does not look significant.
+  
+  • Again, the plural expectation for NN doesn't really go below zero (except for maybe one bucket)
+
+```{r}
+d_agg %>%
+  filter(test == "transf_simple" | test == "transf_mod") %>%
+  group_by(pos, freq_cat, test) %>%
+    summarise(m = mean(pl_exp),
+              s=std.error(pl_exp),
+              upper=m+1.96*s,
+              lower=m-1.96*s)%>%
+  ungroup() %>%
+  ggplot(aes(x=freq_cat, y=m, ymin=lower, ymax=upper, color=pos)) +
+    geom_point(stat="identity", position="dodge", size=3) +
+    geom_errorbar(width=.2) +
+    geom_hline(yintercept=0, color="blue", alpha=0.5) +
+    ylab("Plural Expectation") +
+    xlab("Frequency") +
+    facet_wrap(~test) +
+    #ylim(-1, 1) +
+    theme(axis.text=element_text(size=10),
+          legend.position = "bottom")
+ggsave("./images/number_transf.png",height=5,width=5)
+
+```
+  
+## To Do: Invarience to Transformation
+
+We need to collect the number of times each noun occurs in transformed contexts and in base contexts. And plot the exposure curves for those items.
+
+*Question:* How to collect these statistics via tregex?
+
+*Speculation:* Occurance of nouns in transformed contexts is relativally rare (like maybe there's only a couple hundred examples of it in the PTB), so my guess is that the invarience learning from base --> transformed contexts will look a lot like the graph above.
+
+
+
+
+
