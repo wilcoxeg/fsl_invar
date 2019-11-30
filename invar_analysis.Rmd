@@ -60,7 +60,22 @@ ngram_results = read.csv("test_items_downsample/argstruct-downsample_ngram_outpu
   ungroup() %>%
   select(-sent) %>%
   mutate(sent_pos = sent_pos - 1) %>%
+  mutate(sent_pos = lag(sent_pos)) %>%
   mutate(model = "5gram")
+
+rnng_results = read.csv("test_items_downsample/argstruct-downsample_rnng_output.txt", sep="\t", header=FALSE) %>%
+  rename("word_1" = V1) %>%
+  rename("surprisal" = V2) %>%
+  mutate(sent = if_else(word_1 == "<eos>", 1, 0)) %>%
+  mutate(sent = cumsum(sent)) %>%
+  mutate(sent_pos = 1) %>%
+  group_by(sent) %>%
+    mutate(sent_pos = cumsum(sent_pos)) %>%
+  ungroup() %>%
+  select(-sent) %>%
+  mutate(sent_pos = sent_pos - 2) %>%
+  filter(word_1 != "<eos>") %>%
+  mutate(model = "rnng")
 
 v_counts = read_csv("data/v_counts.csv") %>%
   rename("freq" = `0`) %>%
@@ -77,11 +92,31 @@ d_args = read_csv("data/wsj_proportions.csv") %>%
   select(-X1, -lemma) %>%
   mutate(has_dobj = if_else(has_dobj==TRUE, "obj", "no-obj")) %>%
   mutate(has_nsubjpass = if_else(has_nsubjpass == TRUE, "passubj", "no-passsubj")) %>%
-  unite("type", 3:4) %>%
-  spread(type, count)
+  filter(has_nsubjpass == "no-passsubj") %>%
+  select(-has_nsubjpass) %>%
+  spread(has_dobj, count) %>%
+  replace(is.na(.), 0) %>%
+  mutate(p_obj = obj / (`no-obj` + obj)) %>%
+  select(-`no-obj`, -obj) %>%
+  spread(ptb_pos, p_obj) %>%
+  select(-VBG, -VBP, -VBZ) %>%
+  rename(
+    VB_obj = VB,
+    VBD_obj = VBD,
+    VBN_obj = VBN
+  )
+  #unite("type", 3:4) %>%
+  #spread(type, count) %>%
   #select(-obj_passubj, -NA_NA, -`no-obj_no-passsubj`)
 
+  
+  
 ```
+
+What do we want to see?
+  - X-axis = percent of time it has an argument.
+
+
 
 Add in factor values based on token frequency:
 
@@ -94,7 +129,8 @@ Add in factor values based on token frequency:
 ```{r}
 d_ngram = merge(d, ngram_results, by=0, all=TRUE)
 d_lstm = merge(d, lstm_results, by=0, all=TRUE)
-d_agg = rbind(d_ngram, d_lstm)
+d_rnng = merge(d, rnng_results, by=0, all=TRUE)
+d_agg = rbind(d_ngram, d_lstm, d_rnng)
 
 
 d_agg = d_agg %>%
@@ -279,6 +315,80 @@ ggsave("./images/argstruc-downsamplet_base.png",height=5,width=5)
 
 ```
 
+```{r}
+d_obj = merge(d_agg, d_args, by.x="verb", by.y = "word")
+
+d_obj %>%
+  filter(test == "base-pres") %>%
+  group_by(model, vb_freq, VB_obj) %>%
+    summarise(m = mean(obj_exp),
+              s=std.error(obj_exp),
+              upper=m+1.96*s,
+              lower=m-1.96*s)%>%
+  ungroup() %>%
+  ggplot(aes(x=VB_obj, y=m, ymin=lower, ymax=upper, color=vb_freq)) +
+    geom_point(stat="identity", position="dodge", size=1, alpha=0.8) +
+    stat_smooth(method="lm", se=T, formula=y ~ x) +
+    geom_errorbar(width=.01, alpha=0.1) +
+    geom_hline(yintercept=0, color="blue", alpha=0.5) +
+    ylab("Object Expectation") +
+    xlab("Frequency") +
+    facet_grid(model~vb_freq, scales="free") +
+    #ylim(0, 1) +
+    theme(axis.text=element_text(size=10),
+          legend.position = "bottom")
+ggsave("./images/argstruct-downsample-pres.png",height=5,width=12)
+```
+
+```{r}
+d_obj %>%
+  filter(test == "base-nomod") %>%
+  #filter(vbd_freq == "2" | vbd_freq == "3" | vbd_freq == "5" | vbd_freq == "10") %>%
+  group_by(model, verb, vbd_freq, VBD_obj) %>%
+    summarise(m = mean(obj_exp),
+              s=std.error(obj_exp),
+              upper=m+1.96*s,
+              lower=m-1.96*s)%>%
+  ungroup() %>%
+  ggplot(aes(x=VBD_obj, y=m, ymin=lower, ymax=upper, color=vbd_freq)) +
+    geom_point(stat="identity", position="dodge", size=2, alpha=0.2) +
+    stat_smooth(method="lm", se=T, formula=y ~ x) +
+    geom_errorbar(width=.01, alpha=0.2) +
+    geom_hline(yintercept=0, color="blue", alpha=0.5) +
+    ylab("Object Expectation") +
+    xlab("Frequency") +
+    facet_grid(model~vbd_freq, scales = "free") +
+    #ylim(-5, 5) +
+    theme(axis.text=element_text(size=10),
+          legend.position = "bottom")
+ggsave("./images/argstruc-downsample-trans.png",height=5,width=5)
+
+```
+
+```{r}
+d_obj %>%
+  filter((test == "transf-longmod" | test == "transf-nomod" | test == "transf-mod")) %>%
+  filter(total_freq == "2" | total_freq == "3" | total_freq == "5" | total_freq == "10") %>%
+  group_by(model, test, verb, total_freq, VBD_obj) %>%
+    summarise(m = mean(obj_exp),
+              s=std.error(obj_exp),
+              upper=m+1.96*s,
+              lower=m-1.96*s)%>%
+  ungroup() %>%
+  ggplot(aes(x=VBD_obj, y=m, ymin=lower, ymax=upper, color=model)) +
+    geom_point(stat="identity", position="dodge", size=2, alpha=0.1) +
+    stat_smooth(method="lm", se=T, formula=y ~ x, alpha=0.5) +
+    geom_errorbar(width=.01, alpha=0.1) +
+    geom_hline(yintercept=0, color="blue", alpha=0.5) +
+    ylab("Object Expectation") +
+    xlab("Frequency") +
+    facet_grid(test~total_freq, scales = "free")
+    #ylim(-5, 5) +
+    theme(axis.text=element_text(size=10),
+          legend.position = "bottom")
+ggsave("./images/argstruc-downsample-transform.png",height=5,width=12)
+
+```
 
 ## Passive Context Few Shot Learning
 
@@ -394,7 +504,7 @@ LSTM Baseline:
 ```{r}
 d_agg %>%
   filter(VBN == 0, test=="transf-nomod" | test == "transf-mod" | test == "transf-longmod", is_trans != "Ambitrans") %>%
-  filter(vbd_freq != "20" & vbd_freq != "100" & vbd_freq != "10") %>%
+  #filter(vbd_freq != "20" & vbd_freq != "100" & vbd_freq != "10") %>%
   group_by(model, is_trans, test, vbd_freq) %>%
     summarise(m = mean(obj_exp),
               s=std.error(obj_exp),
