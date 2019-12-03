@@ -77,6 +77,20 @@ rnng_results = read.csv("test_items_downsample/argstruct-downsample_rnng_output.
   filter(word_1 != "<eos>") %>%
   mutate(model = "rnng")
 
+action_results = read.csv("test_items_downsample/argstruct-downsample_action_output.txt", sep="\t", header=FALSE) %>%
+  rename("word_1" = V1) %>%
+  rename("surprisal" = V2) %>%
+  mutate(sent = if_else(word_1 == "<eos>", 1, 0)) %>%
+  mutate(sent = cumsum(sent)) %>%
+  mutate(sent_pos = 1) %>%
+  group_by(sent) %>%
+    mutate(sent_pos = cumsum(sent_pos)) %>%
+  ungroup() %>%
+  select(-sent) %>%
+  mutate(sent_pos = sent_pos - 2) %>%
+  filter(word_1 != "<eos>") %>%
+  mutate(model = "actionLstm")
+
 v_counts = read_csv("data/v_counts.csv") %>%
   rename("freq" = `0`) %>%
   select(-X1, -LEMMA) %>%
@@ -105,17 +119,8 @@ d_args = read_csv("data/wsj_proportions.csv") %>%
     VBD_obj = VBD,
     VBN_obj = VBN
   )
-  #unite("type", 3:4) %>%
-  #spread(type, count) %>%
-  #select(-obj_passubj, -NA_NA, -`no-obj_no-passsubj`)
-
-  
   
 ```
-
-What do we want to see?
-  - X-axis = percent of time it has an argument.
-
 
 
 Add in factor values based on token frequency:
@@ -130,7 +135,8 @@ Add in factor values based on token frequency:
 d_ngram = merge(d, ngram_results, by=0, all=TRUE)
 d_lstm = merge(d, lstm_results, by=0, all=TRUE)
 d_rnng = merge(d, rnng_results, by=0, all=TRUE)
-d_agg = rbind(d_ngram, d_lstm, d_rnng)
+d_action = merge(d, action_results, by=0, all=TRUE)
+d_agg = rbind(d_ngram, d_lstm, d_rnng, d_action)
 
 
 d_agg = d_agg %>%
@@ -147,6 +153,7 @@ d_agg = d_agg %>%
   mutate(is_trans = if_else(((is_trans=="Y") & (is_intrans=="Y")), "Ambitrans", as.character(is_trans))) %>%
   mutate(is_trans = if_else(is_trans == "Y", "Trans", is_trans)) %>%
   mutate(is_trans = if_else(is_trans == "N", "Intrans", is_trans)) %>%
+  mutate(model = factor(model, levels = c("5gram", "lstm", "actionLstm", "rnng"))) %>%
   select(-is_intrans, -freq, -pos)
 
   
@@ -258,7 +265,11 @@ LSTM:
 • No increase in object expectation.
 
 ```{r}
-d_agg %>%
+d_obj =  merge(d_agg, d_args, by.x="verb", by.y = "word")
+
+d_obj %>%
+  filter(vb_freq == "2" | vb_freq == "3" | vb_freq == "5" | vb_freq == "10" | vb_freq == "20" | vb_freq == "30") %>%
+  filter(VB_obj < 0.1 | VB_obj > 0.9) %>%
   filter(test == "base-pres" & is_trans != "Ambitrans") %>%
   group_by(model, is_trans, test, vb_freq) %>%
     summarise(m = mean(obj_exp),
@@ -272,10 +283,11 @@ d_agg %>%
     geom_hline(yintercept=0, color="blue", alpha=0.5) +
     ylab("Object Expectation") +
     xlab("Frequency") +
+    ggtitle("Base Non-Tensed") +
     facet_grid(~model) +
     theme(axis.text=element_text(size=10),
-          legend.position = "bottom")
-ggsave("./images/argstruct-downsample_base-pres.png",height=5,width=5)
+          legend.position = "nond")
+ggsave("./images/argstruct-pres.png",height=3,width=6)
 
 ```
 
@@ -292,10 +304,15 @@ LSTM:
 • The transitive verbs show more object expectation than the intransitive verbs, except for 30 exposures.
 
 
-```{r}
 
-d_agg %>%
+```{r}
+d_obj =  merge(d_agg, d_args, by.x="verb", by.y = "word")
+
+d_obj %>%
   filter(test == "base-nomod" & is_trans != "Ambitrans") %>%
+  filter(vbd_freq == "2" | vbd_freq == "3" | vbd_freq == "5" | vbd_freq == "10" | vbd_freq == "20" | vbd_freq == "30") %>%
+  filter(VBD_obj < 0.1 | VBD_obj > 0.9) %>%
+  #mutate(is_trans = if_else(VBD_obj < 0.1, "Intrans", "Trans")) %>%
   group_by(model, is_trans, test, vbd_freq) %>%
     summarise(m = mean(obj_exp),
               s=std.error(obj_exp),
@@ -308,87 +325,14 @@ d_agg %>%
     geom_hline(yintercept=0, color="blue", alpha=0.5) +
     ylab("Object Expectation") +
     xlab("Frequency") +
-    facet_wrap(~model) +
+    ggtitle("Base Past Tense") +
+    facet_grid(~model) +
     theme(axis.text=element_text(size=10),
           legend.position = "bottom")
-ggsave("./images/argstruc-downsamplet_base.png",height=5,width=5)
+ggsave("./images/argstruct-base.png",height=3,width=6)
 
 ```
 
-```{r}
-d_obj = merge(d_agg, d_args, by.x="verb", by.y = "word")
-
-d_obj %>%
-  filter(test == "base-pres") %>%
-  group_by(model, vb_freq, VB_obj) %>%
-    summarise(m = mean(obj_exp),
-              s=std.error(obj_exp),
-              upper=m+1.96*s,
-              lower=m-1.96*s)%>%
-  ungroup() %>%
-  ggplot(aes(x=VB_obj, y=m, ymin=lower, ymax=upper, color=vb_freq)) +
-    geom_point(stat="identity", position="dodge", size=1, alpha=0.8) +
-    stat_smooth(method="lm", se=T, formula=y ~ x) +
-    geom_errorbar(width=.01, alpha=0.1) +
-    geom_hline(yintercept=0, color="blue", alpha=0.5) +
-    ylab("Object Expectation") +
-    xlab("Frequency") +
-    facet_grid(model~vb_freq, scales="free") +
-    #ylim(0, 1) +
-    theme(axis.text=element_text(size=10),
-          legend.position = "bottom")
-ggsave("./images/argstruct-downsample-pres.png",height=5,width=12)
-```
-
-```{r}
-d_obj %>%
-  filter(test == "base-nomod") %>%
-  #filter(vbd_freq == "2" | vbd_freq == "3" | vbd_freq == "5" | vbd_freq == "10") %>%
-  group_by(model, verb, vbd_freq, VBD_obj) %>%
-    summarise(m = mean(obj_exp),
-              s=std.error(obj_exp),
-              upper=m+1.96*s,
-              lower=m-1.96*s)%>%
-  ungroup() %>%
-  ggplot(aes(x=VBD_obj, y=m, ymin=lower, ymax=upper, color=vbd_freq)) +
-    geom_point(stat="identity", position="dodge", size=2, alpha=0.2) +
-    stat_smooth(method="lm", se=T, formula=y ~ x) +
-    geom_errorbar(width=.01, alpha=0.2) +
-    geom_hline(yintercept=0, color="blue", alpha=0.5) +
-    ylab("Object Expectation") +
-    xlab("Frequency") +
-    facet_grid(model~vbd_freq, scales = "free") +
-    #ylim(-5, 5) +
-    theme(axis.text=element_text(size=10),
-          legend.position = "bottom")
-ggsave("./images/argstruc-downsample-trans.png",height=5,width=5)
-
-```
-
-```{r}
-d_obj %>%
-  filter((test == "transf-longmod" | test == "transf-nomod" | test == "transf-mod")) %>%
-  filter(total_freq == "2" | total_freq == "3" | total_freq == "5" | total_freq == "10") %>%
-  group_by(model, test, verb, total_freq, VBD_obj) %>%
-    summarise(m = mean(obj_exp),
-              s=std.error(obj_exp),
-              upper=m+1.96*s,
-              lower=m-1.96*s)%>%
-  ungroup() %>%
-  ggplot(aes(x=VBD_obj, y=m, ymin=lower, ymax=upper, color=model)) +
-    geom_point(stat="identity", position="dodge", size=2, alpha=0.1) +
-    stat_smooth(method="lm", se=T, formula=y ~ x, alpha=0.5) +
-    geom_errorbar(width=.01, alpha=0.1) +
-    geom_hline(yintercept=0, color="blue", alpha=0.5) +
-    ylab("Object Expectation") +
-    xlab("Frequency") +
-    facet_grid(test~total_freq, scales = "free")
-    #ylim(-5, 5) +
-    theme(axis.text=element_text(size=10),
-          legend.position = "bottom")
-ggsave("./images/argstruc-downsample-transform.png",height=5,width=12)
-
-```
 
 ## Passive Context Few Shot Learning
 
@@ -449,7 +393,13 @@ LSTM Baseline:
   • We see no difference between the conditions for the modified sentences. For the no-modifier sentences, we see same pattern of behavior as with the LSTM model.
 
 ```{r}
-d_agg %>%
+d_obj =  merge(d_agg, d_args, by.x="verb", by.y = "word")
+
+d_obj %>%
+  filter(total_freq == "2" | total_freq == "3" | total_freq == "5" | total_freq == "10" | total_freq == "20" | total_freq == "30") %>%
+  filter(VBD_obj < 0.1 | VBD_obj > 0.9) %>%
+  filter(is_trans != "Ambitrans") %>%
+  group_by(model, is_trans, test, vbd_freq) %>%
   filter( test=="transf-nomod" | test == "transf-mod" | test == "transf-longmod") %>%
   group_by(model, is_trans, test, total_freq) %>%
     summarise(m = mean(obj_exp),
@@ -458,15 +408,16 @@ d_agg %>%
               lower=m-1.96*s)%>%
   ungroup() %>%
   ggplot(aes(x=total_freq, y=m, ymin=lower, ymax=upper, color=is_trans)) +
-    geom_point(stat="identity", position="dodge", size=3) +
+    geom_point(stat="identity", position="dodge", size=2) +
     geom_errorbar(width=.2, alpha=0.8) +
     geom_hline(yintercept=0, color="blue", alpha=0.5) +
-    ylab("Object Expectation") +
+    ylab("Patient Expectation") +
     xlab("Frequency in Total Contexts") +
+    ggtitle("Few Shot Learning: Transformed Contexts") +
     facet_grid(test ~ model) +
     theme(axis.text=element_text(size=10),
           legend.position = "bottom")
-ggsave("./images/argstruct-downsample_transf.png",height=5,width=5)
+ggsave("./images/argstruct-transf.png",height=6,width=6)
 
 ```
 
@@ -505,6 +456,7 @@ LSTM Baseline:
 d_agg %>%
   filter(VBN == 0, test=="transf-nomod" | test == "transf-mod" | test == "transf-longmod", is_trans != "Ambitrans") %>%
   #filter(vbd_freq != "20" & vbd_freq != "100" & vbd_freq != "10") %>%
+  #write.csv("vbd_only_base.csv")
   group_by(model, is_trans, test, vbd_freq) %>%
     summarise(m = mean(obj_exp),
               s=std.error(obj_exp),
@@ -512,15 +464,16 @@ d_agg %>%
               lower=m-1.96*s)%>%
   ungroup() %>%
   ggplot(aes(x=vbd_freq, y=m, ymin=lower, ymax=upper, color=is_trans)) +
-    geom_point(stat="identity", position="dodge", size=4) +
+    geom_point(stat="identity", position="dodge", size=2) +
     geom_errorbar(width=.1) +
     geom_hline(yintercept=0, color="blue", alpha=0.5) +
-    ylab("Object Expectation") +
+    ylab("Patient Expectation") +
     xlab("Frequency in VBD Contexts") +
-    facet_grid(test ~ model) +
+    ggtitle("Invarience Learning") +
+    facet_grid(test ~ model, scales = "free") +
     theme(axis.text=element_text(size=10),
           legend.position = "bottom")
-ggsave("./images/argstruct-downsample_invar.png",height=5,width=5)
+ggsave("./images/argstruct-invar.png",height=4,width=6)
 
 ```
 
@@ -583,10 +536,25 @@ rnng_results = read.csv("test_items_downsample/number-downsample_rnng_output.txt
   filter(word_1 != "<eos>") %>%
   mutate(model = "rnng")
 
+action_results = read.csv("test_items_downsample/number-downsample_action_output.txt", sep="\t", header=FALSE) %>%
+  rename("word_1" = V1) %>%
+  rename("surprisal" = V2) %>%
+  mutate(sent = if_else(word_1 == "<eos>", 1, 0)) %>%
+  mutate(sent = cumsum(sent)) %>%
+  mutate(sent_pos = 1) %>%
+  group_by(sent) %>%
+    mutate(sent_pos = cumsum(sent_pos)) %>%
+  ungroup() %>%
+  select(-sent) %>%
+  mutate(sent_pos = sent_pos - 1) %>%
+  filter(word_1 != "<eos>") %>%
+  mutate(model = "actionLstm")
+
 d_ngram = merge(d, ngram_results, by=0, all=TRUE)
 d_lstm = merge(d, lstm_results, by=0, all=TRUE)
 d_rnng = merge(d, rnng_results, by=0, all=TRUE)
-d_all = rbind(d_ngram, d_lstm, d_rnng)
+d_action = merge(d, action_results, by=0, all=TRUE)
+d_all = rbind(d_ngram, d_lstm, d_rnng, d_action)
 
 d_agg = d_all %>%
   arrange(as.numeric(Row.names)) %>%
@@ -595,6 +563,7 @@ d_agg = d_all %>%
   spread(gram, surprisal) %>%
   mutate(pl_exp = sing-pl) %>%
   select(-sing, -pl) %>%
+  mutate(model = factor(model, levels = c("5gram", "lstm", "actionLstm", "rnng"))) %>%
   mutate(freq = if_else(freq>100, 100, freq/1)) %>%
   mutate(freq_cat = "100") %>%
   #mutate(freq_cat = if_else(freq<=50, "50", freq_cat)) %>%
@@ -606,6 +575,10 @@ d_agg = d_all %>%
   mutate(freq_cat = if_else(freq<=2, "2", freq_cat)) %>%
   mutate(freq_cat = if_else(freq<=1, "1", freq_cat)) %>%
   mutate(freq_cat = factor(freq_cat, levels = c("1", "2", "3", "4", "5", "10", "100")))
+
+
+d_agg %>%
+  filter(freq_cat == "2" & pos == "NNS")
 ```
 
 ## Base Context Few Shot Learning
@@ -656,6 +629,7 @@ Model Comparison:
 
 ```{r}
 d_agg %>%
+  drop_na() %>%
   filter(test == "base_pp" | test == "base_simple" | test == "base_rc") %>%
   group_by(model, pos, freq_cat, test) %>%
     summarise(m = mean(pl_exp),
@@ -673,7 +647,7 @@ d_agg %>%
     #ylim(-1, 1) +
     theme(axis.text=element_text(size=10),
           legend.position = "bottom")
-ggsave("./images/number-downsample_base.png",height=5,width=5)
+ggsave("./images/number-base.png",height=6,width=6)
 
 
 ```
@@ -725,7 +699,12 @@ Model Comparison:
   • The RNNG is the only model that, for the simple test, shows positive expectation for plurals and negatie expectation for the singulars.
 
 ```{r}
+trans_nouns = as.list(read.csv("data/inverted_nouns.txt", sep ="\t", header=FALSE)[2])
+
+intersection = c('threat', 'broker', 'deductibility', 'nameplates', 'businessman', 'listing', 'lobbyist', 'someone', 'desk', 'details', 'lawyer', 'dispute', 'forces', 'hearings', 'creators')
+
 d_agg %>%
+  filter(!verb %in% intersection) %>%
   filter(test == "transf_simple" | test == "transf_mod") %>%
   group_by(model, pos, freq_cat, test) %>%
     summarise(m = mean(pl_exp),
@@ -743,12 +722,10 @@ d_agg %>%
     #ylim(-1, 1) +
     theme(axis.text=element_text(size=10),
           legend.position = "bottom")
-ggsave("./images/number-downsample_transf.png",height=5,width=5)
+ggsave("./images/number-transf.png",height=6,width=6)
 
 ```
   
-## To Do: Invarience to Transformation
-
 
 
 

@@ -1,0 +1,195 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+
+base = read.csv("vbd_only_base.csv") %>%
+  select(-X)
+
+d = read.csv("argstruct-vbdonly_items.csv", header=FALSE) %>%
+  rename("word" = V1) %>%
+  rename("verb" = V2) %>%
+  rename("pos" = V3) %>%
+  rename("freq" = V4) %>%
+  rename("is_trans" = V5) %>%
+  rename("is_intrans" = V6) %>%
+  rename("gram" = V7) %>%
+  rename("target_id" = V8) %>%
+  rename("item_number" = V9) %>%
+  rename("test" = V10)
+
+lstm_results = read.csv("argstruct-vbdonly_lstm_output.txt", sep="\t", header=FALSE) %>%
+  rename("word_1" = V1) %>%
+  rename("surprisal" = V2) %>%
+  mutate(sent = if_else(word_1 == "<eos>", 1, 0)) %>%
+  mutate(sent = cumsum(sent)) %>%
+  mutate(sent_pos = 1) %>%
+  group_by(sent) %>%
+    mutate(sent_pos = cumsum(sent_pos)) %>%
+  ungroup() %>%
+  select(-sent) %>%
+  mutate(sent_pos = sent_pos - 2) %>%
+  filter(word_1 != "<eos>") %>%
+  mutate(model = "lstm")
+
+rnng_results = read.csv("argstruct-vbdonly_rnng_output.txt", sep="\t", header=FALSE) %>%
+  rename("word_1" = V1) %>%
+  rename("surprisal" = V2) %>%
+  mutate(sent = if_else(word_1 == "<eos>", 1, 0)) %>%
+  mutate(sent = cumsum(sent)) %>%
+  mutate(sent_pos = 1) %>%
+  group_by(sent) %>%
+    mutate(sent_pos = cumsum(sent_pos)) %>%
+  ungroup() %>%
+  select(-sent) %>%
+  mutate(sent_pos = sent_pos - 2) %>%
+  filter(word_1 != "<eos>") %>%
+  mutate(model = "rnng")
+
+action_results = read.csv("argstruct-vbdonly_action_output.txt", sep="\t", header=FALSE) %>%
+  rename("word_1" = V1) %>%
+  rename("surprisal" = V2) %>%
+  mutate(sent = if_else(word_1 == "<eos>", 1, 0)) %>%
+  mutate(sent = cumsum(sent)) %>%
+  mutate(sent_pos = 1) %>%
+  group_by(sent) %>%
+    mutate(sent_pos = cumsum(sent_pos)) %>%
+  ungroup() %>%
+  select(-sent) %>%
+  mutate(sent_pos = sent_pos - 2) %>%
+  filter(word_1 != "<eos>") %>%
+  mutate(model = "actionLstm")
+
+v_counts = read_csv("../data/v_counts.csv") %>%
+  rename("freq" = `0`) %>%
+  select(-X1, -LEMMA) %>%
+  spread(XPOS, freq) %>%
+  replace(is.na(.), 0) %>%
+  mutate(total = VBD + VBN,
+         percent_VBD = VBD/total,
+         percent_VBN = VBN/total) %>%
+  rename("word" = WORD)
+
+
+```
+
+```{r}
+d_lstm = merge(d, lstm_results, by=0, all=TRUE)
+d_rnng = merge(d, rnng_results, by=0, all=TRUE)
+d_action = merge(d, action_results, by=0, all=TRUE)
+d_agg = rbind(d_ngram, d_lstm, d_rnng, d_action)
+
+
+d_agg = d_agg %>%
+  arrange(as.numeric(Row.names)) %>%
+  filter((target_id-1 == sent_pos) | (target_id-2 == sent_pos) | (target_id-3 == sent_pos)) %>%
+  filter( !((target_id-3 == sent_pos) & (test=="base-nomod")) ) %>%
+  filter( !((target_id-3 == sent_pos) & (test=="base-pres")) ) %>%
+  group_by(model, verb, pos, is_trans, is_intrans, gram, test, freq, item_number) %>%
+    summarise(surprisal = sum(surprisal)) %>%
+  ungroup() %>%
+  spread(gram, surprisal) %>%
+  mutate(obj_exp = nobj-obj) %>%
+  select(-obj, -nobj) %>%
+  mutate(is_trans = if_else(((is_trans=="Y") & (is_intrans=="Y")), "Ambitrans", as.character(is_trans))) %>%
+  mutate(is_trans = if_else(is_trans == "Y", "Trans", is_trans)) %>%
+  mutate(is_trans = if_else(is_trans == "N", "Intrans", is_trans)) %>%
+  mutate(model = factor(model, levels = c("5gram", "lstm", "actionLstm", "rnng"))) %>%
+  select(-is_intrans, -freq, -pos)
+
+  
+d_agg =  merge(d_agg, v_counts, by.x="verb", by.y = "word") %>%
+  mutate(total = if_else(total > 100, 100, total)) %>%
+  mutate(VB = if_else(VB > 100, 100, VB)) %>%
+  mutate(VBD = if_else(VBD > 100, 100, VBD)) %>%
+  mutate(VBN = if_else(VBN > 100, 100, VBN)) %>%
+
+  mutate(vb_freq = "100") %>%
+  mutate(vb_freq = if_else(VB<=50, "50", vb_freq)) %>%
+  mutate(vb_freq = if_else(VB<=30, "30", vb_freq)) %>%
+  mutate(vb_freq = if_else(VB<=20, "20", vb_freq)) %>%
+  mutate(vb_freq = if_else(VB<=10, "10", vb_freq)) %>%
+  mutate(vb_freq = if_else(VB<=5, "5", vb_freq)) %>%
+  mutate(vb_freq = if_else(VB<=3, "3", vb_freq)) %>%
+  mutate(vb_freq = if_else(VB<=2, "2", vb_freq)) %>%
+  mutate(vb_freq = if_else(VB<=1, "1", vb_freq)) %>%
+  mutate(vb_freq = if_else(VB<=0, "1", vb_freq)) %>%
+  mutate(vb_freq = factor(vb_freq, levels = c("0", "1", "2", "3", "5", "10", "20", "30", "50", "100"))) %>%
+  
+  mutate(total_freq = "100") %>%
+  mutate(total_freq = if_else(total<=50, "50", total_freq)) %>%
+  mutate(total_freq = if_else(total<=30, "30", total_freq)) %>%
+  mutate(total_freq = if_else(total<=20, "20", total_freq)) %>%
+  mutate(total_freq = if_else(total<=10, "10", total_freq)) %>%
+  mutate(total_freq = if_else(total<=5, "5", total_freq)) %>%
+  mutate(total_freq = if_else(total<=3, "3", total_freq)) %>%
+  mutate(total_freq = if_else(total<=2, "2", total_freq)) %>%
+  mutate(total_freq = if_else(total<=1, "1", total_freq)) %>%
+  mutate(total_freq = if_else(total<=0, "1", total_freq)) %>%
+  mutate(total_freq = factor(total_freq, levels = c("0", "1", "2", "3", "5", "10", "20", "30", "50", "100"))) %>%
+  
+  mutate(vbd_freq = "100") %>%
+  mutate(vbd_freq = if_else(VBD<=50, "50", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=30, "30", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=20, "20", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=10, "10", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=5, "5", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=3, "3", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=2, "2", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=1, "1", vbd_freq)) %>%
+  mutate(vbd_freq = if_else(VBD<=0, "0", vbd_freq)) %>%
+  mutate(vbd_freq = factor(vbd_freq, levels = c("0", "1", "2", "3", "5", "10", "20", "30", "50", "100"))) %>%
+  
+  mutate(vbn_freq = "100") %>%
+  mutate(vbn_freq = if_else(VBN<=50, "50", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=30, "30", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=20, "20", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=10, "10", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=5, "5", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=3, "3", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=2, "2", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=1, "1", vbn_freq)) %>%
+  mutate(vbn_freq = if_else(VBN<=0, "0", vbn_freq)) %>%
+  mutate(vbn_freq = factor(vbn_freq, levels = c("0", "1", "2", "3", "5", "10", "20", "30", "50", "100")))
+
+d_agg = rbind(d_agg, base)
+
+```
+
+```{r}
+d_agg %>%
+  filter(VBN == 0, test=="transf-nomod" | test == "transf-mod" | test == "transf-longmod", is_trans != "Ambitrans") %>%
+  #filter(vbd_freq != "20" & vbd_freq != "100" & vbd_freq != "10") %>%
+  group_by(model, is_trans, test, vbd_freq) %>%
+    summarise(m = mean(obj_exp),
+              s=std.error(obj_exp),
+              upper=m+1.96*s,
+              lower=m-1.96*s)%>%
+  ungroup() %>%
+  ggplot(aes(x=vbd_freq, y=m, ymin=lower, ymax=upper, color=is_trans)) +
+    geom_point(stat="identity", position="dodge", size=2) +
+    geom_errorbar(width=.1) +
+    geom_hline(yintercept=0, color="blue", alpha=0.5) +
+    ylab("Patient Expectation") +
+    xlab("Frequency in VBD Contexts") +
+    ggtitle("Invarience Learning") +
+    facet_grid(test ~ model, scales = "free") +
+    theme(axis.text=element_text(size=10),
+          legend.position = "bottom")
+ggsave("../images/argstruct-invar.png",height=4,width=6)
+
+```
+
+```{r}
+d_freq = d_agg %>%
+  filter(VBN == 0, vbd_freq == "2") %>%
+  group_by(verb) %>%
+    summarise(m = mean(obj_exp)) %>%
+  ungroup()
+
+38, 18, 15, 5
+
+```
