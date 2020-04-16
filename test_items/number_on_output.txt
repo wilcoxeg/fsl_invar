@@ -1,2 +1,0 @@
-sentence_id	token_id	token	surprisal
-1	1	Some	0.000000
