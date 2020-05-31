@@ -5,7 +5,7 @@ output:
     latex_engine: xelatex
 ---
 
-```{r}
+```{r, echo=FALSE}
 library(tidyverse)
 library(brms)
 library(lme4)
@@ -15,329 +15,269 @@ library(stringr)
 library(readxl)
 library(RColorBrewer)
 library(Hmisc)
+
+options(scipen = 999) 
 ```
 
 
 # Verbal Argument Structure
 
-Read in the data. Verb argument structure status (transitive, ambitransitive, intransitive) comes from CELEX2, distributed by the LDC.
 
+
+## Stats Tests
+```{r}
+supervision_test = function(df){
+  m1 = glm(acc ~ model, family = binomial, data = df %>% filter(model == "rnng" | model == "lstm") )
+  m2 = glm(acc ~ model, family = binomial, data = df %>% filter(model == "actionLstm" | model == "lstm") )
+  df = df %>%
+    summarise(e_rnng = round(coef(summary(m1))[2], 5),
+              p_rnng = round(coef(summary(m1))[8], 5),
+              e_action = round(coef(summary(m2))[2], 5),
+              p_action = round(coef(summary(m2))[8], 5))
+}
+
+
+exposure_test = function(df){
+  m = glm(acc ~ freq_cat, family = binomial, data = df)
+  df = df %>% summarise( e = coef(summary(m))[2],
+                         p = coef(summary(m))[8])
+}
+
+fewshot_test = function(df){
+  #print(unique(df$test))
+  #print(unique(df$freq_cat))
+  
+  ngram_acc = df %>% filter(model=="5gram") %>% select(acc) %>% as_vector()
+
+  t.ngram = binom.test(sum(ngram_acc), length(ngram_acc), p = 0.5, alternative="greater")$p.value
+  lstm_acc = df %>% filter(model=="lstm") %>% select(acc) %>% as_vector()
+  t.lstm = binom.test(sum(lstm_acc), length(lstm_acc), p = 0.5, alternative="greater")$p.value
+  action_acc = df %>% filter(model=="actionLstm") %>% select(acc) %>% as_vector()
+  t.action = binom.test(sum(action_acc), length(action_acc), p = 0.5, alternative="greater")$p.value
+  rnng_acc = df %>% filter(model=="rnng") %>% select(acc) %>% as_vector()
+  t.rnng = binom.test(sum(rnng_acc), length(rnng_acc), p = 0.5, alternative="greater")$p.value
+
+  m1 = glm(acc ~ model, family = binomial, data = df %>% filter(model == "lstm" | model == "5gram") )
+  m2 = glm(acc ~ model, family = binomial, data = df %>% filter(model == "actionLstm" | model == "5gram") )
+  m3 = glm(acc ~ model, family = binomial, data = df %>% filter(model == "rnng" | model == "5gram") )
+
+  df = df %>%
+    summarise(t.ngram = round(t.ngram, 5), t.lstm = round(t.lstm,5), t.action = round(t.action,5), t.rnng = round(t.rnng,5))
+              #e_lstm = round(coef(summary(m1))[2], 5),
+              #p_lstm = round(coef(summary(m1))[8], 5),
+              #e_action = round(coef(summary(m2))[2], 5),
+              #p_action = round(coef(summary(m2))[8], 5),
+              #e_rnng = round(coef(summary(m3))[2], 5),
+              #p_rnng = round(coef(summary(m3))[8], 5)),
+  return(df)
+}
+
+
+```
+
+
+```{r}
+plot_accs = function(df_raw, df_summary, filename, h, w, ylims){
+  
+  ggplot() +
+    theme_bw()+
+    stat_smooth(geom = "line", data = df_raw, aes(x=log10(freq_cat), y=acc, color=model), method = 'glm', method.args = list(family = "binomial"), size = 1, alpha=0.5) +
+    stat_smooth(data = df_raw, aes(x=log10(freq_cat), y=acc, color=model), method = 'glm', method.args = list(family = "binomial"), size = 0, alpha=0.2) +
+  
+    geom_point(data = df_summary, aes(x=freq_cat, y=m, color = model, fill=model), stat="identity", position="dodge", size=2) +
+    geom_errorbar(data = df_summary, aes(x=freq_cat, ymin=lower, ymax=upper, color = model), width=0.1, alpha=0.8) +
+    geom_hline(yintercept=0.5, color="blue", alpha=0.5) +
+    facet_grid(~test) +
+    coord_cartesian(ylim=ylims) +
+    theme(axis.text=element_text(size=10),
+          legend.position = "bottom", 
+          panel.grid.minor = element_blank())
+ggsave(filename,height=h,width=w)
+
+}
+
+```
+
+
+### Read in the data
 ```{r}
 
 d_agg = read.csv("argstruct_data.csv") %>%
   mutate(vb_freq = as.factor(vb_freq),
          vbd_freq = as.factor(vbd_freq),
          total_freq = as.factor(total_freq)) %>%
-  mutate(model = factor(model, levels = c("5gram", "lstm", "actionLstm", "rnng")))
+  mutate(model = factor(model, levels = c("5gram", "lstm", "actionLstm", "rnng"))) %>%
+  mutate(acc = if_else(obj_exp > 0, 1, 0),
+         acc = if_else(is_trans == "Intrans", 1-acc, acc)) %>%
+  filter(is_trans != "Ambitrans")
+
 
 
 ```
 
-
-## Base Context Few Shot Learning
-
-### Tests
-
-The Object Expectation is the surprisal in the no-obj condition minus the surprisal in the obj condition. Positive means the model expects an object after the verb
-
-**Base-Past**
-
-  • The lion devoured the gazelle today . [obj]
-  
-  • The lion devoured today . [no-obj]
-  
-**Base-Pres**
-
-  • The lion can devour the gazelle today . [obj]
-  
-  • The lion can devour today . [no-obj]
-  
-We measure the surprisal in the "yesterday ." portion of the sentence
-
-Predictions: 
-
-  (1) The object expectation for transitive should be greater than for intransitive verbs.
-  
-  (2) The object expectation should be positive for transitive verbs (an object should be expected)
-  
-  (3) The object expectation should be negative for intransitive verbs (no object should be expected)
-  
-  (4) Ambitransitive verbs should be in between transitive and intransitive
-
-### Results
-
-Plot the object expectation for transitive, intransitive and ambitransitive verbs against their frequency in active contexts (vbn_freq) in the corpus.
 
 #### Base-Present
-
-We see a couple of things:
-
-NGram:
-
-• The transitive verbs are not significantly above the intransitive verbs.
-
-• There is a main effect of verb frequency. As the verb becomes more frequent, the model expects no object regardless of whether it's a transitive or intransitive verb.
-
-LSTM:
-
-• The transitive verbs show more object expectation than the intransitive verbs, except for 2 and 20 exposures.
-
-• No increase in object expectation.
-
 ```{r}
-d_agg %>%
-  filter(vb_freq == "2" | vb_freq == "3" | vb_freq == "5" | vb_freq == "10" | vb_freq == "20" | vb_freq == "30") %>%
+d_arg_base_pres = d_agg %>%
   filter(test == "base-pres" & is_trans != "Ambitrans") %>%
-  
-  group_by(model, is_trans, test, vb_freq) %>%
-    summarise(m = mean(obj_exp),
-              s=std.error(obj_exp),
-              upper=m+1.96*s,
-              lower=m-1.96*s)%>%
-  ungroup() %>%
-  
-  ggplot(aes(x=vb_freq, y=m, ymin=lower, ymax=upper, color=is_trans)) +
-    geom_point(stat="identity", position="dodge", size=2) +
-    geom_errorbar(width=.2, alpha=0.8) +
-    geom_hline(yintercept=0, color="blue", alpha=0.5) +
-    ylab("Object Expectation") +
-    xlab("Frequency") +
-    ggtitle("Argument Structure: Active, Present") +
-    facet_grid(~model) +
-    theme(axis.title.x=element_blank(),
-          legend.position = "none")
-ggsave("./images/argstruct-pres.png",height=2,width=6)
+  mutate(freq_cat = vb_freq) %>%
+  mutate(freq_cat = as.numeric(as.character(freq_cat)))
+
+d_arg_base_pres_summary = d_arg_base_pres %>%
+  mutate(freq_cat = log10(freq_cat)) %>%
+  group_by(model, freq_cat, test) %>%
+     summarise(m = mean(acc),
+              upper = binconf(sum(acc), n())[2],
+              lower = binconf(sum(acc), n())[3])%>%
+  ungroup()
+
+plot_accs(d_arg_base_pres, d_arg_base_pres_summary, "./images/arg_base_pres.pdf", 5, 3, c(0, 1))
+
 
 ```
 
-### Positive Predictions
-
+Statistics
 ```{r}
-d_agg %>%
-  filter(vb_freq == "2" | vb_freq == "3" | vb_freq == "5" | vb_freq == "10" | vb_freq == "20" | vb_freq == "30") %>%
-  filter(test == "base-pres",  is_trans != "Ambitrans") %>%
-  
-  mutate(obj_exp = if_else(obj_exp > 0, 1, 0)) %>%
-  mutate(obj_exp = if_else(is_trans == "Intrans", 1-obj_exp, obj_exp)) %>%
-  
-  group_by(model, test, vb_freq) %>%
-    summarise(m = mean(obj_exp),
-              s=std.error(obj_exp),
-              upper=m+1.96*s,
-              lower=m-1.96*s)%>%
-  ungroup() %>%
-  ggplot(aes(x=vb_freq, y=m, ymin=lower, ymax=upper, fill=model)) +
-    geom_bar(stat="identity", position="dodge", size=3) +
-    geom_errorbar(position=position_dodge(width=0.9), width=.2, alpha=0.8) +
-    geom_hline(yintercept=0.5, color="blue", alpha=0.5) +
-    ylab("Obj Exp. Accuracy") +
-    xlab("Frequency") +
-    #ggtitle("Base Non-Tensed") +
-    facet_grid(~model) +
-    ylim(0,1) +
-    scale_fill_brewer(palette="PRGn") +
-    theme(axis.text=element_text(size=10),
-          legend.position = "none")
-ggsave("./images/argstruct-pres-acc.png",height=1.5,width=6)
+# Fewshot Learning
+d_arg_base_pres %>%
+  group_by(test, freq_cat) %>% do({fewshot_test(.)}) %>% ungroup() %>%
+arrange(test) %>%
+gather(model, p, c(t.ngram, t.lstm, t.action, t.rnng)) %>% group_by(test, model) %>% filter(p<0.05) %>% summarise(n = n())
 
+d_arg_base_pres %>%
+  group_by(test, model) %>% do({exposure_test(.)}) %>% ungroup()
+
+# Structural supervision
+d_arg_base_pres %>%
+  group_by(test) %>% do({ supervision_test(.)}) %>% ungroup() %>%
+arrange(test)
+ 
 ```
+
 
 #### Base-Past
-
-NGram:
-
-• The intransitive verbs show higher object expectation than the transitive verbs. (This is odd..)
-
-• There is a main effect of verb frequency. As the verb becomes more frequent, the model expects no object regardless of whether it's a transitive or intransitive verb.
-
-LSTM:
-
-• The transitive verbs show more object expectation than the intransitive verbs, except for 30 exposures.
-
-
-
-```{r}
-d_agg %>%
+```{r expecation, eval = False}
+d_arg_base_past = d_agg %>%
   filter(test == "base-nomod" & is_trans != "Ambitrans") %>%
-  filter(vbd_freq == "2" | vbd_freq == "3" | vbd_freq == "5" | vbd_freq == "10" | vbd_freq == "20" | vbd_freq == "30") %>%
+  mutate(freq_cat = vbd_freq) %>%
+  mutate(freq_cat = as.numeric(as.character(freq_cat)))
 
-  group_by(model, is_trans, test, vbd_freq) %>%
-    summarise(m = mean(obj_exp),
-              s=std.error(obj_exp),
-              upper=m+1.96*s,
-              lower=m-1.96*s)%>%
-  ungroup() %>%
-  ggplot(aes(x=vbd_freq, y=m, ymin=lower, ymax=upper, color=is_trans)) +
-    geom_point(stat="identity", position="dodge", size=2) +
-    geom_errorbar(width=.2, alpha=0.8) +
-    geom_hline(yintercept=0, color="blue", alpha=0.5) +
-    ylab("Object Expectation") +
-    xlab("Frequency") +
-    ggtitle("Argument Structure: Active, Past") +
-    facet_grid(~model) +
-    theme(axis.title.x=element_blank(),
-          legend.position = "none")
-ggsave("./images/argstruct-base.png",height=2,width=6)
+  
+d_arg_base_past_summary = d_arg_base_past %>%
+  mutate(freq_cat = log10(freq_cat)) %>%
+  group_by(model, freq_cat, test) %>%
+     summarise(m = mean(acc),
+              upper = binconf(sum(acc), n())[2],
+              lower = binconf(sum(acc), n())[3])%>%
+  ungroup()
+
+plot_accs(d_arg_base_past, d_arg_base_past_summary, "./images/arg_base_past.pdf", 5, 3, c(0, 1))
 
 ```
-
-## Accuracy Metric
+### Statistics
 ```{r}
+# Fewshot Learning
+d_arg_base_past %>%
+  group_by(test, freq_cat) %>% do({fewshot_test(.)}) %>% ungroup() %>%
+arrange(test, freq_cat) %>%
+gather(model, p, c(t.ngram, t.lstm, t.action, t.rnng)) %>% group_by(test, model) %>% filter(p<0.05) %>% summarise(n = n())
 
-d_agg %>%
-  filter(test == "base-nomod", is_trans != "Ambitrans") %>%
-  filter(vbd_freq == "2" | vbd_freq == "3" | vbd_freq == "5" | vbd_freq == "10" | vbd_freq == "20" | vbd_freq == "30") %>%
-  filter(VBD_obj < 0.1 | VBD_obj > 0.9) %>%
-  
-  mutate(obj_exp = if_else(obj_exp > 0, 1, 0)) %>%
-  mutate(obj_exp = if_else(is_trans == "Intrans", 1-obj_exp, obj_exp)) %>%
-  
-  group_by(model, test, vbd_freq) %>%
-    summarise(m = mean(obj_exp),
-              s=std.error(obj_exp),
-              upper=m+1.96*s,
-              lower=m-1.96*s)%>%
-  ungroup() %>%
-  ggplot(aes(x=vbd_freq, y=m, ymin=lower, ymax=upper, fill=model)) +
-    geom_bar(stat="identity", position="dodge", size=3) +
-    geom_errorbar(position=position_dodge(width=0.9), width=.2, alpha=0.8) +
-    geom_hline(yintercept=0.5, color="blue", alpha=0.5) +
-    ylab("Obj Exp Accuracy") +
-    xlab("Frequency") +
-    #ggtitle("Base Non-Tensed") +
-    facet_grid(~model) +
-    scale_fill_brewer(palette="PRGn") +
-    ylim(0,1) +
-    theme(axis.text=element_text(size=10),
-          legend.position = "none")
-ggsave("./images/argstruct-base-acc.png",height=1.5,width=6)
+d_arg_base_past %>%
+  group_by(test, model) %>% do({exposure_test(.)}) %>% ungroup()
 
+# Structural supervision
+d_arg_base_past %>%
+  group_by(test) %>% do({ supervision_test(.)}) %>% ungroup() %>%
+arrange(test)
+ 
 ```
+
 
 ## Passive Context Few Shot Learning
 
-### Test Items
 
-Again, object expectation is the surprisal in the object condition minus the surprisal in the no-object condition. Now, it may be the case that all the model is doing is learning that some verbs can occur in a "was + VERB" context. If so, that's fine. This test is -- in some sense -- a control (the model would fail to generalize for verbs it hasn't seen in the passive context).
+```{r, Expectation, eval = False}
 
-  • The gazelle was devoured yesterday . [object]
-  
-  • The gazelle devoured yesterday . [no-object]
-  
-Example with transitive verb
-
-  • The gazelle was slept yesterday . [object]
-  
-  • The gazelle slept yesterday . [no-object]
-  
-Modifier
-
-  • The gazelle was quickly and rapidly devoured yesterday . [obj]
-  
-  • The gazelle quickly and rapidly devoured yesterday . [no-obj]
-  
-Long Modifier
-
-  • The gazelle was quickly , rapidly , and totally devoured yesterday . [obj]
-  
-  • The gazelle quickly , rapidly , and totally devoured yesterday . [no-obj]
-  
-We measure the object expectation in the "devoured yesterday ." portion of the sentences. 
-
-Predictions: 
-
-  (1) The object expectation for transitive should be greater than for intransitive verbs.
-  
-  (2) The object expectation should be positive for transitive verbs (it is more likely to occur with a passive object than without an object)
-  
-  (3) The object expectation should be negative for intransitive verbs (it is more likely to occur without an object than with a passive object)
-  
-  (4) Ambitransitive verbs should be in between transitive and intransitive
-
-### Results
-
-Here we have to plot against the frequency in total contexts, becaues (theoretically) intransitive verbs don't occur in passive contexts. (Actually, according to the PTB there are a number of times intransitive verbs occur passivally. I'm investigating this further.)
-
-We see a couple of things:
-
-  • For intransitive verbs: The object expectation stars out positive and becomes negative with more exposure, indicating that the models learn proper transitive behavior with greater exposure. Crucially, the learning rate is slower than for the active contexts. This is because the model has less (or no) exposure for these verbs in passive contexts.
-      
-  • For transitive verbs: The object expectation starts off postivie, and increases with exposure.
-  
-  • There is a significant difference between transitive and intransitive after only 2 exposures! Strong evidence of few-shot learning capeabilities
-      
-  • The ambi-transitive verbs are between transitive and intransitives.
-
-LSTM Baseline:
-
-  • We see no difference between the conditions for the modified sentences. For the no-modifier sentences, we see same pattern of behavior as with the LSTM model.
-
-```{r}
-d_agg %>%
-  filter(total_freq == "2" | total_freq == "3" | total_freq == "5" | total_freq == "10" | total_freq == "20" | total_freq == "30") %>%
-  filter(VBD_obj < 0.1 | VBD_obj > 0.9) %>%
-  filter(is_trans != "Ambitrans") %>%
-  group_by(model, is_trans, test, vbd_freq) %>%
+d_arg_transf = d_agg %>%
   filter( test=="transf-nomod" | test == "transf-mod" | test == "transf-longmod") %>%
-  
-  group_by(model, is_trans, test, total_freq) %>%
-    summarise(m = mean(obj_exp),
-              s=std.error(obj_exp),
-              upper=m+1.96*s,
-              lower=m-1.96*s)%>%
-  ungroup() %>%
-  ggplot(aes(x=total_freq, y=m, ymin=lower, ymax=upper, color=is_trans)) +
-    geom_point(stat="identity", position="dodge", size=2) +
-    geom_errorbar(width=.2, alpha=0.8) +
-    geom_hline(yintercept=0.5, color="blue", alpha=0.5) +
-    ylab("Passivizability Expectation") +
-    xlab("Frequency in Total Contexts") +
-    ggtitle("Argument Structure: Passive Contexts") +
-    facet_grid(test ~ model) +
-    theme(axis.title.x=element_blank(),
-          legend.position = "none")
-ggsave("./images/argstruct-transf.png",height=3.5,width=6)
+  mutate(freq_cat = vbd_freq) %>%
+  mutate(freq_cat = as.numeric(as.character(freq_cat))+1 )
+
+d_arg_transf_summary = d_arg_transf %>%
+  mutate(freq_cat = log10(freq_cat)) %>%
+  group_by(model, freq_cat, test) %>%
+    summarise(m = mean(acc),
+              upper = binconf(sum(acc), n())[2],
+              lower = binconf(sum(acc), n())[3])%>%
+  ungroup()
+
+plot_accs(d_arg_transf, d_arg_transf_summary, "./images/arg_transf.pdf", 5, 6, c(0, 1))
 
 ```
 
+### Statistics
+```{r}
+
+# Fewshot Learning
+d_arg_transf %>%
+  group_by(test, freq_cat) %>% do({fewshot_test(.)}) %>% ungroup() %>%
+arrange(test, freq_cat)%>%
+gather(model, p, c(t.ngram, t.lstm, t.action, t.rnng)) %>% group_by(test, model) %>% filter(p<0.05) %>% summarise(n = n())
+
+d_arg_transf %>%
+  group_by(test, model) %>% do({exposure_test(.)}) %>% ungroup()
+
+# Structural supervision
+d_arg_transf %>%
+  group_by(test) %>% do({ supervision_test(.)}) %>% ungroup() %>%
+arrange(test)
+ 
+ 
+```
+
+## Transformation & Invarience
 
 ```{r}
-d_agg %>%
-  filter(total_freq == "2" | total_freq == "3" | total_freq == "5" | total_freq == "10" | total_freq == "20" | total_freq == "30") %>%
-  filter(VBD_obj < 0.1 | VBD_obj > 0.9) %>%
-  filter(is_trans != "Ambitrans") %>%
-  group_by(model, is_trans, test, vbd_freq) %>%
-  filter( test=="transf-nomod" | test == "transf-mod" | test == "transf-longmod") %>%
-  
-  mutate(obj_exp = if_else(obj_exp > 0, 1, 0)) %>%
-  mutate(obj_exp = if_else(is_trans == "Intrans", 1-obj_exp, obj_exp)) %>%
-  
-  group_by(model, test, total_freq) %>%
-    summarise(m = mean(obj_exp),
-              s=std.error(obj_exp),
-              upper=m+1.96*s,
-              lower=m-1.96*s)%>%
-  ungroup() %>%
-  ggplot(aes(x=total_freq, y=m, ymin=lower, ymax=upper, fill=model)) +
-    geom_bar(stat="identity", position="dodge", size=3) +
-    geom_errorbar(position=position_dodge(width=0.9), width=.2, alpha=0.8) +
-    geom_hline(yintercept=0.5, color="blue", alpha=0.5) +
-    ylab("Passive. Exp. Accuracy") +
-    xlab("Frequency") +
-    #ggtitle("Base Non-Tensed") +
-    facet_grid(test~model) +
-    scale_fill_brewer(palette="PRGn") +
-    theme(axis.text=element_text(size=10),
-          legend.position = "none")
-ggsave("./images/argstruct-transf-acc.png",height=3.5,width=6)
+d_agg = read.csv("./arg_transf.csv") %>%
+  mutate(acc = if_else(obj_exp > 0, 1, 0)) %>%
+  mutate(acc = if_else(is_trans == "Intrans", 1-acc, acc)) %>%
+  filter(is_trans != "Ambitrans")
+
+arg_transf_invar = d_agg %>%
+  mutate(freq_cat = as.factor(vbd_freq)) %>%
+  mutate(freq_cat = as.numeric(as.character(freq_cat)))
+
+arg_transf_invar_summary =  arg_transf_invar%>%
+  mutate(freq_cat = log10(freq_cat)) %>%
+  group_by(model, freq_cat, test) %>%
+     summarise(m = mean(acc),
+              upper = binconf(sum(acc), n())[2],
+              lower = binconf(sum(acc), n())[3])%>%
+  ungroup()
+
+plot_accs(arg_transf_invar, arg_transf_invar_summary, "./images/arg_transf_invar.pdf", 5, 6, c(0, 1))
 
 ```
 
+### Statistics
+```{r}
+# Fewshot Learning
+arg_transf_invar %>%
+  group_by(test, freq_cat) %>% do({fewshot_test(.)}) %>% ungroup() %>%
+arrange(test, freq_cat)%>%
+gather(model, p, c(t.ngram, t.lstm, t.action, t.rnng)) %>% group_by(test, model) %>% filter(p<0.05) %>% summarise(n = n())
 
-## Transformations 
+arg_transf_invar %>%
+  group_by(test, model) %>% do({exposure_test(.)}) %>% ungroup()
 
-SEE VBD_ONLY_ANALYSIS for invarience results!
-
+# Structural supervision
+arg_transf_invar %>%
+  group_by(test) %>% do({ supervision_test(.)}) %>% ungroup() %>%
+arrange(test)
+ 
+ 
+ 
+```
 
 # Nominal Number Learning
 
@@ -352,216 +292,90 @@ d_agg = read.csv("number_data.csv") %>%
 
 ```
 
+
 ## Base Context Few Shot Learning
 
-For these results I plot learning against frequency in both base and transformed contexts.
-
-### Test Items
-
-We measure the plural expectation by taking the surprisal at "is" minus the surprisal at "are" for two classes of nouns: Singular nouns (NN) and Plural nouns (NNS)
-
-Base simple
-
-  • The president is [sing]
-  
-  • The president are [pl]
-
-Base_PP: A nominal distractor of the opposite number
-
-  • The president with the documents is...
-  
-  • The president with the documents are...
-  
-Predictions:
-
-  (1) For singular nouns (NN): Negative plural expectation
-  
-  (2) For plural nouns (NNS): Positive plural expectation
-  
-  (3) Difference in expectation between NN and NNS
-
-### Results
-
-Simple Condition
-
-  • We find a significant difference between NN and NNS with even one exposure
-  
-  • We find a positive plural expectation for NNS after two exposures
-  
-Base_PP Condition
-
-  • We find a significant difference between NN and NNS after two exposures
-  
-  • The singular expectation grows with exposure for NNS, but is never greater than zero
-  
-Model Comparison:
-
-  • We see the largest difference between the two conditions with the RNNG
-
 ```{r}
-d_agg %>%
+d_num_base_acc = d_agg %>%
   drop_na() %>%
   filter(test == "base_pp" | test == "base_simple" | test == "base_rc") %>%
-  group_by(model, pos, freq_cat, test) %>%
-    summarise(m = mean(pl_exp),
-              s=std.error(pl_exp),
-              upper=m+1.96*s,
-              lower=m-1.96*s)%>%
-  ungroup() %>%
-  ggplot(aes(x=freq_cat, y=m, ymin=lower, ymax=upper, color=pos)) +
-    geom_point(stat="identity", position="dodge", size=2, alpha=1) +
-    geom_errorbar(width=.2, alpha=1) +
-    geom_hline(yintercept=0, color="blue", alpha=0.5) +
-    ylab("Plural Expectation") +
-    xlab("Frequency") +
-    facet_grid(test ~ model) +
-    ggtitle("Number: Base Contexts") +
-    theme(axis.title.x=element_blank(),
-          legend.position = "none")
-ggsave("./images/number-base.png",height=3.5,width=6)
+  mutate(acc = if_else(pl_exp > 0, 1, 0)) %>%
+  mutate(acc = if_else(pos == "NN", 1-acc, acc)) %>%
+  mutate(freq_cat = as.numeric(as.character(freq_cat)))
 
-
-```
-
-
-```{r}
-d_agg %>%
-  drop_na() %>%
-  filter(test == "base_pp" | test == "base_simple" | test == "base_rc") %>%
-  
-  mutate(pl_exp = if_else(pl_exp > 0, 1, 0)) %>%
-  mutate(pl_exp = if_else(pos == "NN", 1-pl_exp, pl_exp)) %>%
-  
+d_num_base_acc_summary = d_num_base_acc %>%
+  mutate(freq_cat = log10(freq_cat)) %>%
   group_by(model, freq_cat, test) %>%
-    summarise(m = mean(pl_exp),
-              s=std.error(pl_exp),
-              upper=m+1.96*s,
-              lower=m-1.96*s)%>%
-  ungroup() %>%
-  ggplot(aes(x=freq_cat, y=m, ymin=lower, ymax=upper, fill=model)) +
-    geom_bar(stat="identity", position="dodge", size=3) +
-    geom_errorbar(position=position_dodge(width=0.9), width=.2, alpha=0.8) +
-    geom_hline(yintercept=0.5, color="blue", alpha=0.5) +
-    ylab("Pl Expectation Accuracy") +
-    xlab("Frequency") +
-    #ggtitle("Base Non-Tensed") +
-    facet_grid(test~model) +
-    scale_fill_brewer(palette="PRGn") +
-    ylim(0,1) +
-    theme(axis.text=element_text(size=10),
-          legend.position = "none")
-ggsave("./images/number-base-acc.png",height=3.5,width=6)
+    summarise(m = mean(acc),
+              upper = binconf(sum(acc), n())[2],
+              lower = binconf(sum(acc), n())[3])%>%
+  ungroup()
+
+plot_accs(d_num_base_acc, d_num_base_acc_summary, "./images/number-base.pdf", 5, 6, c(0.4, 0.9))
 
 
 ```
+### Statistics
+```{r}
+# Exposure learning
+d_num_base_acc %>%
+  group_by(test, freq_cat) %>% do({fewshot_test(.)}) %>% ungroup() %>%
+arrange(test, freq_cat) %>%
+gather(model, p, c(t.ngram, t.lstm, t.action, t.rnng)) %>% group_by(test, model) %>% filter(p<0.05) %>% summarise(n = n())
+
+d_num_base_acc %>%
+  group_by(test, model) %>% do({exposure_test(.)}) %>% ungroup()
+
+# Structural supervision
+d_num_base_acc %>%
+  group_by(test) %>% do({ supervision_test(.)}) %>% ungroup() %>%
+arrange(test)
+```
+
 
 
 ## Transformed Context Few Shot Learning
 
-### Test Items
-
-We measure the plural expectation by taking the surprisal difference between the two conditions at the noun. We use singular nouns (NN) and plural nouns (NNS)
-
-Transf_simple:
-
-  • Is/was the president... [sing]
-  
-  • Are/were the president... [pl]
-
-Transf_mod:
-
-  • Is/was the very big and important president...[sing]
-  
-  • Are/were the very big and important president... [pl]
-  
-Predictions:
-
-  (1) For singular nouns (NN): Negative plural expectation
-  
-  (2) For plural nouns (NNS): Positive plural expectation
-  
-  (3) Difference in expectation between NN and NNS
-
-### Results
-
-Note: The scale here is *really small*. Because we have so many items the difference is probably significant (I haven't ran the stats yet, but the error bars are tiny). However, the diffence is like 1/5 of a bit of surprisal.
-
-Simple Condition
-
-  • We find a significant difference between NN and NNS after two exposures, except for nouns that occur 3 times in training.
-  
-  • The NN never has a negative plural expectation.
-  
-Modifier Condition
-
-  • We find a significant difference between NN and NNS after two exposures, but again for nouns that occur 3 timse the difference does not look significant.
-  
-  • Again, the plural expectation for NN doesn't really go below zero (except for maybe one bucket)
-  
-Model Comparison:
-
-  • The RNNG is the only model that, for the simple test, shows positive expectation for plurals and negatie expectation for the singulars.
-
-```{r}
-trans_nouns = as.list(read.csv("data/inverted_nouns.txt", sep ="\t", header=FALSE)[2])
-
-intersection = c('threat', 'broker', 'deductibility', 'nameplates', 'businessman', 'listing', 'lobbyist', 'someone', 'desk', 'details', 'lawyer', 'dispute', 'forces', 'hearings', 'creators')
-
-d_agg %>%
-  filter(!verb %in% intersection) %>%
-  filter(test == "transf_simple" | test == "transf_mod") %>%
-  group_by(model, pos, freq_cat, test) %>%
-    summarise(m = mean(pl_exp),
-              s=std.error(pl_exp),
-              upper=m+1.96*s,
-              lower=m-1.96*s)%>%
-  ungroup() %>%
-  ggplot(aes(x=freq_cat, y=m, ymin=lower, ymax=upper, color=pos)) +
-    geom_point(stat="identity", position="dodge", size=2) +
-    geom_errorbar(width=.2) +
-    geom_hline(yintercept=0, color="blue", alpha=0.5) +
-    ylab("Plural Expectation") +
-    xlab("Frequency") +
-    facet_grid(test ~ model) +
-    ggtitle("Number: Transformed Contexts") +
-    #ylim(-1, 1) +
-    theme(axis.title.x=element_blank(),
-          legend.position = "none")
-ggsave("./images/number-transf.png",height=3.5,width=6)
-
-```
-  
 ```{r}
 intersection = c('threat', 'broker', 'deductibility', 'nameplates', 'businessman', 'listing', 'lobbyist', 'someone', 'desk', 'details', 'lawyer', 'dispute', 'forces', 'hearings', 'creators')
 
-d_agg %>%
+d_num_transf_acc = d_agg %>%
   filter(!verb %in% intersection) %>%
   filter(test == "transf_simple" | test == "transf_mod") %>%
+  mutate(acc = if_else(pl_exp > 0, 1, 0)) %>%
+  mutate(acc = if_else(pos == "NN", 1-acc, acc)) %>%
+  mutate(freq_cat = as.numeric(as.character(freq_cat)))
+
   
-  mutate(pl_exp = if_else(pl_exp > 0, 1, 0)) %>%
-  mutate(pl_exp = if_else(pos == "NN", 1-pl_exp, pl_exp)) %>%
-  
+d_num_transf_acc_summary = d_num_transf_acc %>%
+  mutate(freq_cat = log10(freq_cat)) %>%
   group_by(model, freq_cat, test) %>%
-    summarise(m = mean(pl_exp),
-              s=std.error(pl_exp),
-              upper=m+1.96*s,
-              lower=m-1.96*s)%>%
-  ungroup() %>%
-  ggplot(aes(x=freq_cat, y=m, ymin=lower, ymax=upper, fill=model)) +
-    geom_bar(stat="identity", position="dodge", size=3) +
-    geom_errorbar(position=position_dodge(width=0.9), width=.2, alpha=0.8) +
-    geom_hline(yintercept=0.5, color="blue", alpha=0.5) +
-    ylab("Pl Expectation Accuracy") +
-    xlab("Frequency") +
-    #ggtitle("Base Non-Tensed") +
-    facet_grid(test~model) +
-    ylim(0,1) +
-    scale_fill_brewer(palette="PRGn") +
-    theme(axis.text=element_text(size=10),
-          legend.position = "none")
-ggsave("./images/number-transf-acc.png",height=3.5,width=6)
+     summarise(m = mean(acc),
+              upper = binconf(sum(acc), n())[2],
+              lower = binconf(sum(acc), n())[3])%>%
+  ungroup()
+
+plot_accs(d_num_transf_acc, d_num_transf_acc_summary, "./images/number-transf.pdf", 5, 6, c(0.4, 0.9))
 
 
 ```
 
+### Statistics
+```{r}
+
+# Few-shot Learning
+d_num_transf_acc %>%
+  group_by(test, freq_cat) %>% do({fewshot_test(.)}) %>% ungroup() %>%
+arrange(test, freq_cat) %>%
+gather(model, p, c(t.ngram, t.lstm, t.action, t.rnng)) %>% group_by(test, model) %>% filter(p<0.05) %>% summarise(n = n())
+
+d_num_transf_acc %>%
+  group_by(test, model) %>% do({exposure_test(.)}) %>% ungroup()
+  
+# Structural supervision
+d_num_transf_acc %>%
+  group_by(test) %>% do({ supervision_test(.)}) %>% ungroup() %>%
+arrange(test)
+ 
+```
 

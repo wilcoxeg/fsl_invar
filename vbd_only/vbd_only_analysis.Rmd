@@ -135,6 +135,9 @@ d_agg = rbind(d_agg, base)
 
 ```
 
+```{r}
+write.csv(d_agg, "arg_transf.csv")
+```
 
 ## Transformations 
 
