@@ -395,6 +395,25 @@ d_pp_all = rbind(d_pp_ngram, d_pp_lstm, d_pp_rnng, d_pp_action)
 
 ```
 
+```{r}
+d_all %>%
+  arrange(as.numeric(Row.names)) %>%
+  filter(target_id == sent_pos) %>%
+  select(-Row.names, -word, -target_id, -word_1, -sent_pos) %>%
+  filter(model == "5gram", test== "transf_simple") %>%
+  filter(freq > 50) %>%
+  spread(gram, surprisal) %>%
+  mutate(pl_exp = sing-pl) %>%
+  select(-sing, -pl) %>%
+  mutate(acc = if_else(pl_exp > 0, 1, 0)) %>%
+  mutate(acc = if_else(pos == "NN", 1-acc, acc)) %>%
+  summarise(sum = n())
+
+binom.test(408, 800, p=0.5, alternative = "greater")
+
+
+```
+
 
 ```{r}
 
@@ -421,7 +440,7 @@ d_agg = d_all %>%
   mutate(freq_cat = if_else(freq<=1, "1", freq_cat)) %>%
   mutate(freq_cat = factor(freq_cat, levels = c("1", "2", "3", "4", "5", "10", "100")))
 
-write.csv(d_agg, "number_data.csv")
+#write.csv(d_agg, "number_data.csv")
 
 ```
 

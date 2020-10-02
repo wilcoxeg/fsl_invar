@@ -5,7 +5,7 @@ All the neural LMs are trained on the Wall Street Journal portion of the Penn Tr
 
 ### invar_item_generation
 
-A python notebook for generating the test items used to test the neural LMs. There are two ways to generate the argument structure tests `generate_argstruct_tests` generates tests for both past-tense and infinitive verbs, whereas `generate_argstruct_tests_vbd` generates tests for only past-tense verbs. (These are actually two different functions, even thought they are quite similar, in violation of DRY.)
+A python notebook for generating the test items used to test the neural LMs. There are two ways to generate the argument structure tests `generate_argstruct_tests` generates tests for both past-tense and infinitive verbs, whereas `generate_argstruct_tests_vbd` generates tests for only past-tense verbs.
 
 Files are saved in the `/test_items_downsample` directory.
 
@@ -13,9 +13,7 @@ Files are saved in the `/test_items_downsample` directory.
 
 Directory where the test items are stored after generation (these are `csv` files that end in `tests`).
 
-Also stored in this directory are the outputs of the varios models on the tests. Models were run seperatly on openmind. The results for the `number` tests have an extra set of results `pp`, which include a prepositional phrase distractor and were generated after the base tests.
-
-The directory and files are amended with `downsample` because we had initially generated many more items per test, but decided to reduce the numebr them, as the rnng was taking too long to run :)
+Also stored in this directory are the outputs of the varios models on the tests. Models were run seperatly. The results for the `number` tests have an extra set of results `pp`, which include a prepositional phrase distractor and were generated after the base tests.
 
 ### data_wrangling.rmd
 
